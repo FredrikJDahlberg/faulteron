@@ -26,13 +26,20 @@
 # to packets leaving the interface: to delay what reaches a member, impair the sender's interface. Jitter beyond the
 # gap between packets reorders them.
 #
-# Needs CAP_BPF, CAP_NET_ADMIN and a mountable bpffs: run it in a privileged container that shares the target's
-# network namespace (docker run --privileged --network container:<name>). The attachment outlives this process,
-# so each command is a separate run.
+# Needs CAP_BPF, CAP_NET_ADMIN and a mountable bpffs: run it as root on a Linux host, with FAULTERON_DEV naming the
+# interface, or in a privileged container that shares the target's network namespace (docker run --privileged
+# --network container:<name>). The attachment outlives this process, so each command is a separate run.
 set -euo pipefail
 
 DEV="${FAULTERON_DEV:-eth0}"
-OBJ="${FAULTERON_OBJ:-/usr/lib/faulteron/faulteron.bpf.o}"
+# The program installed beside this script (make install, the image), else built beside it in a checkout (make).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OBJ="${FAULTERON_OBJ:-}"
+if [[ -z "${OBJ}" ]]; then
+    for OBJ in "${HERE}/../lib/faulteron/faulteron.bpf.o" "${HERE}/../build/faulteron.bpf.o"; do
+        [[ -f "${OBJ}" ]] && break
+    done
+fi
 PIN=/sys/fs/bpf/faulteron
 TYPES=(pad data nak sm err setup rttm res)
 ANY=65535
@@ -63,6 +70,7 @@ detach() {
 # by; the filters hold the programs once they are gone. fq holds each delayed packet until the departure time its
 # program stamped, and its default limits of 100 packets a flow would drop what a delay holds back.
 attach() {
+    [[ -f "${OBJ}" ]] || die "no BPF program at ${OBJ}: run make, or set FAULTERON_OBJ"
     detach
     mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
     rm -rf "${PIN}"

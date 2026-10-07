@@ -10,15 +10,25 @@ nothing else. Process kills and pauses cannot produce any of these. The tests he
 [seqeron](https://github.com/FredrikJDahlberg/seqeron), an Aeron Cluster sequencer.
 
 Linux only, kernel 5.18 or later, IPv4 only. It runs in a privileged container that shares the target
-container's network namespace; on macOS, use the Docker VM (Colima or Docker Desktop). On a host without
-containers, run `bin/faulteron` as root with `FAULTERON_DEV` set to the interface and `FAULTERON_OBJ` to the
-compiled program. Traffic over `aeron:ipc` never reaches an interface, so no rule can touch it.
+container's network namespace, or as root on a Linux host; on macOS, use the Docker VM (Colima or Docker
+Desktop). Traffic over `aeron:ipc` never reaches an interface, so no rule can touch it.
 
 ## Build
 
 ```bash
 docker build -t faulteron:local .
 ```
+
+On a Linux host, without docker, the Makefile builds the program (it needs clang, `libbpf-dev` and
+`linux-libc-dev`) and installs it beside the CLI, which then needs root, `bpftool`, `iproute2` and `jq`:
+
+```bash
+make                          # build/faulteron.bpf.o, which bin/faulteron finds from the checkout
+sudo make install             # faulteron and its program under /usr/local; PREFIX moves them
+sudo FAULTERON_DEV=ens5 faulteron attach
+```
+
+`FAULTERON_DEV` names the interface, `eth0` by default, and `FAULTERON_OBJ` overrides where the program is found.
 
 ## Use
 
