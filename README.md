@@ -1,4 +1,4 @@
-# faulteron
+<img src="doc/branding/faulteron-logo.jpg" alt="faulteron, an Aeron eBPF fault injector" width="480">
 
 [![License](https://img.shields.io/github/license/FredrikJDahlberg/faulteron)](LICENSE)
 
