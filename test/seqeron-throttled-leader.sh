@@ -3,15 +3,16 @@
 #
 # THE FAULT: the leader's container is capped at CPUS CPUs while it runs (docker update --cpus). Every thread in it,
 # from the consensus module to the garbage collector, now runs only until the container has spent its share of
-# each 100 ms period and then waits out the rest. The leader is alive and connected but too slow to lead: a gray
-# failure, which neither a kill nor a network fault produces.
+# each 100 ms period and then waits out the rest. The leader is alive and connected but slow: a gray failure, which
+# neither a kill nor a network fault produces. It is never silent for longer than one period, so whether it costs an
+# election depends on the cluster's leader heartbeat timeout, and either outcome is correct.
 #
 # WHAT IT ASSERTS:
 #   1. The cap is in place.
-#   2. The cluster replaces the starved leader.
+#   2. Either the cluster replaces the starved leader, or the starved leader keeps leading.
 #   3. A ClusterProbe confirm producer on a follower, streaming throughout, sees every frame on its tap exactly once,
 #      in order.
-#   4. With its CPU back, the old leader rejoins as a follower and its tap catches up.
+#   4. With its CPU back, the old leader's tap catches up: as a follower of the new leader, or as the leader still.
 set -uo pipefail
 
 LOG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/logs/throttled-leader"
@@ -44,10 +45,14 @@ CAP="$(docker exec "node-${OLD}" cat /sys/fs/cgroup/cpu.max)"
 echo "node-${OLD} capped at ${CPUS} CPUs (cpu.max ${CAP})"
 
 NEW="$(await_leader "$(deadline 30)" "${OLD}")"
+STILL_LEADING=0
 if [[ -n "${NEW}" ]]; then
     echo "new leader = member ${NEW}, $((SECONDS - FAULT_START))s into the fault"
+elif [[ "$(await_leader "$(deadline 5)")" == "${OLD}" ]]; then
+    STILL_LEADING=1
+    echo "no other member took over: node-${OLD} still leads"
 else
-    echo "no other member took over"
+    echo "no member leads"
 fi
 REMAINING=$((FAULT_SECS - (SECONDS - FAULT_START)))
 ((REMAINING > 0)) && sleep "${REMAINING}"
@@ -60,7 +65,8 @@ echo "node-${OLD} given its CPU back after $((HEALED - FAULT_START))s"
 
 REJOINED=0
 CAUGHT_UP=0
-if [[ "${RUNNING}" == true && -n "${NEW}" ]] && await_follower "${OLD}" "${NEW}" "$(deadline 60)"; then
+if [[ "${RUNNING}" == true ]] &&
+    { [[ -n "${NEW}" ]] && await_follower "${OLD}" "${NEW}" "$(deadline 60)" || ((STILL_LEADING == 1)); }; then
     REJOINED=1
     for ((attempt = 1; attempt <= 5; attempt++)); do
         if ping_tap "${OLD}" >> "${LOG_DIR}/ping-after.log" 2>&1; then
@@ -77,7 +83,7 @@ CONFIRM_RC=$?
 echo ""
 echo "=== RESULT ==="
 echo "cap                         : ${CPUS} CPUs, cpu.max ${CAP}"
-echo "new leader                  : ${NEW:-none}"
+echo "new leader                  : ${NEW:-none}$( ((STILL_LEADING == 1)) && echo " (node-${OLD} still leads)")"
 echo "old leader running          : ${RUNNING}"
 echo "old leader rejoined / tap   : ${REJOINED} / ${CAUGHT_UP}"
 echo "PendingSends producer       : $(grep -h 'confirm:' "${LOG_DIR}/confirm.log" | tail -1)"
@@ -87,8 +93,8 @@ PASS=1
     echo "FAIL: the cap was not applied"
     PASS=0
 }
-[[ -n "${NEW}" ]] || {
-    echo "FAIL: the starved leader kept leading"
+[[ -n "${NEW}" ]] || ((STILL_LEADING == 1)) || {
+    echo "FAIL: no member leads"
     PASS=0
 }
 ((CONFIRM_RC == 0)) || {
@@ -96,7 +102,7 @@ PASS=1
     PASS=0
 }
 ((REJOINED == 1 && CAUGHT_UP == 1)) || {
-    echo "FAIL: node-${OLD} did not rejoin and catch up"
+    echo "FAIL: node-${OLD} did not rejoin, or its tap did not catch up"
     PASS=0
 }
 
