@@ -6,8 +6,9 @@ Network fault injection for Aeron deployments, in eBPF. A pair of tc programs dr
 interface by peer address, port, Aeron frame type, retransmission and SBE message. A test can cut one link between
 two members and leave every other, cut a member off from its peers while its clients stay connected, take away
 one half of Aeron's loss repair, make a link slow, reordering and duplicating, or silence one member's votes and
-nothing else. Process kills and pauses cannot produce any of these. The tests here drive
-[seqeron](https://github.com/FredrikJDahlberg/seqeron), an Aeron Cluster sequencer.
+nothing else. Process kills and pauses cannot produce any of these.
+[seqeron](https://github.com/FredrikJDahlberg/seqeron), an Aeron Cluster sequencer, drives it in its network-fault
+tests.
 
 Linux only, kernel 5.18 or later, IPv4 only. It runs in a privileged container that shares the target
 container's network namespace, or as root on a Linux host; on macOS, use the Docker VM (Colima or Docker
@@ -84,38 +85,9 @@ timestamped lines between two throwaway containers, with one rule of every kind 
 each packet went to, what the rules counted, what the receiver got (delay, duplicates both ways, reordering), that
 the CLI refuses bad input without changing any rule, and that `remove` and `detach` undo exactly what they should.
 
-The `seqeron-*` tests run seqeron's three-node docker cluster, in which every member has its own ports, and need its
-operator distribution (`./gradlew operatorDist`) in `SEQERON_DIR`, which defaults to a checkout beside this one,
-`../seqeron`. `test/lib.sh` is what they share.
-
-- `test/seqeron-partition-leader.sh` cuts the leader off from its peers while a `ClusterProbe confirm` producer
-  streams through it, then heals it. It asserts that packets were dropped, that the majority elected a new
-  leader, that the old leader rejoined as a follower, and that the PendingSends producer saw every frame exactly
-  once.
-- `test/seqeron-asymmetric-partition.sh` cuts only the link between the leader and one follower
-  (`--peer`); the other follower still reaches both. It asserts that the cut-off follower, which stands for
-  election, does not depose the leader, that a producer on the other follower stays exact, and that the
-  follower catches up once healed.
-- `test/seqeron-unrepaired-follower.sh` drops 5% of one follower's log DATA and one half of its repair: its NAKs
-  (`REPAIR=nak`, the default) or the leader's retransmissions to it (`REPAIR=retransmit`). The follower falls
-  behind with no election called. The test asserts that a ping through that follower's tap passes before the
-  fault, times out under it and passes again after the heal, and that a producer on the other follower stays
-  exact throughout.
-- `test/seqeron-jittery-leader.sh` delays the leader's cluster and ingress traffic by 20–50 ms and duplicates 10%
-  of it, under the 200 ms leader heartbeat timeout. It asserts that no election runs, that every member's tap
-  answers a ping, and that a producer on a follower stays exact. `DELAY_MS=250 JITTER_MS=0` takes the delay past
-  the timeout; that run is expected to fail.
-- `test/seqeron-throttled-leader.sh` caps the leader's container at 0.05 CPUs while it runs (`docker update
-  --cpus`, through `throttle` in `test/lib.sh`), so it is alive and connected but too slow to lead. It asserts that
-  the cluster replaces it, that a producer on a follower stays exact, and that the old leader rejoins and catches up
-  once its CPU is back. This fault is the harness's, not faulteron's: `aeron:ipc` traffic never reaches an
-  interface, and a stall is the only fault it has, which starving the node of CPU produces. `CPUS=0.5` is a cap
-  the leader keeps up under; that run is expected to fail.
-- `test/seqeron-mute-voter.sh` drops one follower's RequestVote and Vote messages and nothing else, then kills
-  the leader. It asserts that the fault is invisible until then, that the two survivors elect no leader while it
-  holds, that they elect one as soon as it heals, that the killed member rejoins, and that a producer on the
-  muted follower stays exact. The hold stays under the 5 s new-leader timeout of seqeron's `ClusterStreamSender`:
-  past it, the producer's session closes and nothing reopens it.
+seqeron's network-fault tests, which partition, slow and silence its three-node docker cluster with faulteron, are
+in seqeron's repository, under `seqeron-service/src/test/scripts/faulteron`, since they assert its guarantees and
+change with it. They build the injector image from a checkout of this repository.
 
 ## License
 
